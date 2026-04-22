@@ -60,7 +60,6 @@ export default function Home() {
       setStatus("connected");
       setMessages([]);
 
-      // পুরনো signal listener সরাও
       socketRef.current.off("signal");
 
       const peer = new Peer({
@@ -145,98 +144,144 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
-      <h1 className="text-4xl font-bold mb-6 text-blue-400">Umingle</h1>
+    <main className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
+      {/* Header */}
+      <div className="container mx-auto px-4 py-8 flex flex-col items-center justify-center min-h-screen">
+        <div className="text-center mb-12 space-y-3">
+          <h1 className="text-5xl md:text-7xl font-extrabold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+            Umingle
+          </h1>
+          <p className="text-gray-300 text-sm md:text-base">
+            Connect with someone new in real-time
+          </p>
+        </div>
 
-      {status === "idle" && (
-        <button
-          onClick={startChat}
-          className="bg-blue-500 hover:bg-blue-600 text-white px-8 py-3 rounded-full text-xl"
-        >
-          Start Chat
-        </button>
-      )}
+        {/* Status Section */}
+        <div className="flex flex-col items-center gap-6 w-full max-w-md">
+          {status === "idle" && (
+            <button
+              onClick={startChat}
+              className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white px-10 py-4 rounded-full text-lg font-semibold shadow-xl transition-all duration-300 hover:scale-105"
+            >
+              ✨ Start Chat
+            </button>
+          )}
 
-      {status === "waiting" && (
-        <p className="text-gray-400 text-lg animate-pulse">
-          Looking for someone...
-        </p>
-      )}
+          {status === "waiting" && (
+            <div className="flex flex-col items-center gap-4">
+              <div className="w-16 h-16 border-4 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+              <p className="text-gray-300 text-lg animate-pulse">
+                Looking for someone...
+              </p>
+            </div>
+          )}
 
-      {(status === "waiting" || status === "connected") && (
-        <button
-          onClick={stopChat}
-          className="mt-4 bg-red-500 hover:bg-red-600 px-6 py-2 rounded-full"
-        >
-          Stop
-        </button>
-      )}
+          {(status === "waiting" || status === "connected") && (
+            <button
+              onClick={stopChat}
+              className="bg-red-500/80 hover:bg-red-600 text-white px-8 py-2.5 rounded-full font-medium transition-all duration-300"
+            >
+              ✕ Disconnect
+            </button>
+          )}
+        </div>
 
-      {status === "connected" && (
-        <div className="w-full max-w-4xl mt-6 flex flex-col md:flex-row gap-4">
-          {/* Videos */}
-          <div className="flex flex-col gap-3 flex-1">
-            <div className="relative w-full">
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="w-full bg-black rounded-xl"
-              />
-              <span className="absolute top-2 left-2 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded-full">Stranger</span>
+        {/* Connected UI */}
+        {status === "connected" && (
+          <div className="w-full max-w-6xl mt-12">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Video Section */}
+              <div className="lg:col-span-2 space-y-4">
+                <div className="relative bg-black/40 rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className="w-full aspect-video object-cover"
+                  />
+                  <div className="absolute top-4 left-4 bg-black/60 rounded-full px-3 py-1.5 text-xs font-medium flex items-center gap-1.5">
+                    <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                    Stranger
+                  </div>
+                  <div className="absolute bottom-4 right-4 w-32 md:w-40 aspect-video rounded-xl overflow-hidden shadow-lg border-2 border-blue-400/50 bg-black/50">
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-center text-white text-[10px] py-1">
+                      You
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={skipPartner}
+                  className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-semibold py-3 rounded-xl transition-all duration-300 flex items-center justify-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
+                  </svg>
+                  Next Partner
+                </button>
+              </div>
 
-              <div className="absolute bottom-2 right-2 w-32">
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full bg-black rounded-xl border-2 border-blue-400"
-                />
-                <span className="text-center block text-white text-xs mt-1">You</span>
+              {/* Chat Section */}
+              <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-xl flex flex-col h-[500px] lg:h-auto overflow-hidden">
+                <div className="p-4 border-b border-white/10 flex items-center gap-2">
+                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                  <h3 className="font-semibold text-gray-200">Live Chat</h3>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  {messages.map((msg, i) => (
+                    <div
+                      key={i}
+                      className={`flex ${msg.from === "you" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[85%] px-4 py-2 rounded-2xl text-sm shadow-md ${
+                          msg.from === "you"
+                            ? "bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-br-none"
+                            : "bg-white/10 text-gray-200 rounded-bl-none"
+                        }`}
+                      >
+                        {msg.text}
+                      </div>
+                    </div>
+                  ))}
+                  {messages.length === 0 && (
+                    <div className="h-full flex items-center justify-center text-gray-400 text-sm italic">
+                      Say hello to start the conversation
+                    </div>
+                  )}
+                </div>
+                
+                <div className="p-4 border-t border-white/10">
+                  <div className="flex gap-2">
+                    <input
+                      className="flex-1 bg-white/10 border border-white/20 rounded-full px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-400/50 placeholder:text-gray-400"
+                      placeholder="Type a message..."
+                      value={inputText}
+                      onChange={(e) => setInputText(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                    />
+                    <button
+                      onClick={sendMessage}
+                      className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white px-5 rounded-full transition-all duration-300 flex items-center justify-center"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-            <button
-              onClick={skipPartner}
-              className="bg-yellow-500 hover:bg-yellow-600 px-6 py-2 rounded-full"
-            >
-              Next →
-            </button>
           </div>
-
-          {/* Chat */}
-          <div className="flex flex-col w-full md:w-72 bg-gray-800 rounded-xl p-3 gap-2">
-            <div className="flex-1 overflow-y-auto h-64 flex flex-col gap-1">
-              {messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`text-sm px-3 py-1 rounded-full max-w-xs ${msg.from === "you"
-                    ? "bg-blue-500 self-end"
-                    : "bg-gray-600 self-start"
-                    }`}
-                >
-                  {msg.text}
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                className="flex-1 bg-gray-700 rounded-full px-3 py-1 text-sm outline-none"
-                placeholder="Type a message..."
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-              />
-              <button
-                onClick={sendMessage}
-                className="bg-blue-500 px-3 py-1 rounded-full text-sm"
-              >
-                Send
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </main>
   );
 }
