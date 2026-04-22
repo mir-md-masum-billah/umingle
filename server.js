@@ -12,16 +12,17 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"],
   },
+  pingTimeout: 10000,  // 10 সেকেন্ড পরে disconnect ধরবে
+  pingInterval: 5000,  // প্রতি 5 সেকেন্ডে ping করবে
 });
 
 let waitingQueue = [];
-const rooms = new Map(); // room -> [socket1, socket2]
+const rooms = new Map();
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   socket.on("find_match", () => {
-    // আগের queue থেকে disconnected socket সরাও
     waitingQueue = waitingQueue.filter((s) => s.connected);
 
     if (waitingQueue.length > 0) {
@@ -36,7 +37,6 @@ io.on("connection", (socket) => {
       socket.emit("matched", { room, initiator: false });
       partner.emit("matched", { room, initiator: true });
 
-      // Room এ কে আছে track করো
       socket.currentRoom = room;
       partner.currentRoom = room;
 
@@ -62,14 +62,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    // Queue থেকে সরাও
     waitingQueue = waitingQueue.filter((s) => s.id !== socket.id);
 
-    // যদি কোনো room এ ছিল, partner কে জানাও
-    // এবং partner কে auto re-search এ পাঠাও
     if (socket.currentRoom) {
       const room = socket.currentRoom;
-      socket.to(room).emit("partner_left"); // partner চলে গেছে
+      socket.to(room).emit("partner_left");
       rooms.delete(room);
     }
 
@@ -77,7 +74,7 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Signaling server running on port ${PORT}`);
 });
