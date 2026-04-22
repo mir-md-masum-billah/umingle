@@ -39,11 +39,14 @@ export default function Home() {
       audio: true,
     });
     localStreamRef.current = stream;
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = stream;
-    }
     return stream;
   };
+
+  useEffect(() => {
+    if (localStreamRef.current && localVideoRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+  }, [status]);
 
   const startChat = async () => {
     const stream = await getLocalStream();
