@@ -209,7 +209,7 @@ export default function Home() {
                       autoPlay
                       playsInline
                       muted
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-cover transform scale-x-[-1]"
                     />
                     <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-center text-white text-[10px] py-1">
                       You
