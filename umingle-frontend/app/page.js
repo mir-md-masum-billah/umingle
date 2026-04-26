@@ -41,9 +41,8 @@ export default function Home() {
         audio: true,
       });
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
+      // localVideoRef এখনো DOM এ নেই (status === "idle"),
+      // তাই status change useEffect এ assign হবে
       return stream;
     } catch (error) {
       console.error("Error accessing media devices:", error);
@@ -57,6 +56,7 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Status বদলালে local stream reassign করো (DOM এ video এসে যায়)
   useEffect(() => {
     if (localStreamRef.current && localVideoRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
@@ -75,6 +75,12 @@ export default function Home() {
 
   const startChat = async () => {
     try {
+      // FIX: আগের socket থাকলে আগে disconnect করো
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+
       const stream = await getLocalStream();
 
       socketRef.current = io(process.env.NEXT_PUBLIC_SIGNALING_SERVER, {
@@ -96,6 +102,7 @@ export default function Home() {
         setStatus("connected");
         setMessages([]);
 
+        // আগের signal listener সরাও, নতুন peer এর জন্য
         socketRef.current.off("signal");
 
         const peer = new Peer({
@@ -106,7 +113,7 @@ export default function Home() {
         });
 
         peer.on("signal", (data) => {
-          socketRef.current.emit("signal", { room, data });
+          socketRef.current?.emit("signal", { room, data });
         });
 
         peer.on("stream", (remoteStream) => {
@@ -115,9 +122,14 @@ export default function Home() {
           }
         });
 
+        // FIX: peer error এ skipPartner() না ডেকে সরাসরি cleanup + find_match
         peer.on("error", (err) => {
           console.error("Peer error:", err);
-          skipPartner();
+          cleanupPeer();
+          roomRef.current = null; // FIX: room clear
+          setMessages([]);
+          setStatus("waiting");
+          socketRef.current?.emit("find_match");
         });
 
         peer.on("connect", () => {
@@ -135,6 +147,7 @@ export default function Home() {
 
       socketRef.current.on("partner_skipped", () => {
         cleanupPeer();
+        roomRef.current = null; // FIX: room clear
         setMessages([]);
         setStatus("waiting");
         socketRef.current.emit("find_match");
@@ -142,6 +155,7 @@ export default function Home() {
 
       socketRef.current.on("partner_left", () => {
         cleanupPeer();
+        roomRef.current = null; // FIX: room clear
         setMessages([]);
         setStatus("waiting");
         socketRef.current.emit("find_match");
@@ -164,14 +178,18 @@ export default function Home() {
   };
 
   const skipPartner = () => {
-    if (peerRef.current) {
-      cleanupPeer();
-    }
+    cleanupPeer();
+
     if (socketRef.current && roomRef.current) {
       socketRef.current.emit("skip", { room: roomRef.current });
     }
+
+    // FIX: skip করার পরেই room null করো
+    roomRef.current = null;
+
     setStatus("waiting");
     setMessages([]);
+
     if (socketRef.current) {
       socketRef.current.emit("find_match");
     }
@@ -179,6 +197,7 @@ export default function Home() {
 
   const stopChat = () => {
     cleanupPeer();
+
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
@@ -193,13 +212,15 @@ export default function Home() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
+
     setStatus("idle");
     setMessages([]);
     roomRef.current = null;
   };
 
+  // FIX: connected না হলে message পাঠানো যাবে না
   const sendMessage = () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || status !== "connected") return;
     if (socketRef.current && roomRef.current) {
       socketRef.current.emit("message", {
         room: roomRef.current,
@@ -210,6 +231,7 @@ export default function Home() {
     }
   };
 
+  // Component unmount এ cleanup
   useEffect(() => {
     return () => {
       if (localStreamRef.current) {
@@ -224,6 +246,8 @@ export default function Home() {
     };
   }, []);
 
+  const isWaiting = status === "waiting";
+
   return (
     <main className="min-h-screen min-h-dvh bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white flex flex-col">
       {/* Header */}
@@ -236,7 +260,7 @@ export default function Home() {
             onClick={stopChat}
             className="bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white h-9 w-9 rounded-full font-medium transition-all duration-200 flex items-center justify-center text-sm"
           >
-            鉁�
+            ✕
           </button>
         )}
       </header>
@@ -250,7 +274,7 @@ export default function Home() {
             onClick={startChat}
             className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 active:scale-95 text-white px-8 sm:px-10 py-3 sm:py-4 rounded-full text-base sm:text-lg font-semibold shadow-xl transition-all duration-300 hover:scale-105"
           >
-            鉁� Start Chat
+            ✨ Start Chat
           </button>
         )}
 
@@ -261,7 +285,7 @@ export default function Home() {
             {/* Video Section */}
             <div className="w-full lg:flex-1 lg:min-w-0">
               <div className="relative bg-black/40 rounded-2xl overflow-hidden border border-white/10 shadow-2xl w-full">
-                {status === "waiting" ? (
+                {isWaiting ? (
                   <div className="flex flex-col items-center justify-center gap-4 w-full aspect-video min-h-[200px] sm:min-h-[280px]">
                     <div className="w-12 h-12 sm:w-16 sm:h-16 border-4 border-blue-400 border-t-transparent rounded-full animate-spin" />
                     <p className="text-gray-300 text-sm sm:text-lg animate-pulse">
@@ -297,7 +321,8 @@ export default function Home() {
             </div>
 
             {/* Chat Section */}
-            <div className="w-full lg:w-80 xl:w-96 flex flex-col bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-xl overflow-hidden"
+            <div
+              className="w-full lg:w-80 xl:w-96 flex flex-col bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-xl overflow-hidden"
               style={{ height: "clamp(260px, 40vw, 420px)" }}
             >
               {/* Chat header */}
@@ -310,7 +335,9 @@ export default function Home() {
               <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2">
                 {messages.length === 0 ? (
                   <div className="h-full flex items-center justify-center text-gray-400 text-xs sm:text-sm italic">
-                    Say hello to start the conversation
+                    {isWaiting
+                      ? "Waiting for a match..."
+                      : "Say hello to start the conversation"}
                   </div>
                 ) : (
                   messages.map((msg, i) => (
@@ -339,20 +366,24 @@ export default function Home() {
                   onClick={skipPartner}
                   className="flex-shrink-0 px-2.5 sm:px-3 h-10 text-xs sm:text-sm bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 active:scale-95 text-white font-semibold rounded-xl transition-all duration-200 whitespace-nowrap"
                 >
-                  Next 鈥�
+                  Next ›
                 </button>
 
+                {/* FIX: waiting state এ input disabled */}
                 <input
-                  className="flex-1 min-w-0 text-xs sm:text-sm bg-white/10 border border-white/20 rounded-full px-3 sm:px-4 py-2 outline-none focus:ring-2 focus:ring-blue-400/50 placeholder:text-gray-400"
-                  placeholder="Type a message..."
+                  className="flex-1 min-w-0 text-xs sm:text-sm bg-white/10 border border-white/20 rounded-full px-3 sm:px-4 py-2 outline-none focus:ring-2 focus:ring-blue-400/50 placeholder:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                  placeholder={isWaiting ? "Waiting for match..." : "Type a message..."}
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                  disabled={isWaiting}
                 />
 
+                {/* FIX: waiting state এ send button disabled */}
                 <button
                   onClick={sendMessage}
-                  className="flex-shrink-0 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 active:scale-95 text-white w-10 h-10 rounded-full transition-all duration-200 flex items-center justify-center"
+                  disabled={isWaiting}
+                  className="flex-shrink-0 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 active:scale-95 text-white w-10 h-10 rounded-full transition-all duration-200 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
                 >
                   <svg className="w-4 h-4 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -366,4 +397,4 @@ export default function Home() {
       </div>
     </main>
   );
-          }
+}
