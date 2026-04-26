@@ -7,7 +7,6 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -16,13 +15,13 @@ const io = new Server(server, {
 });
 
 let waitingQueue = [];
-const rooms = new Map();
+const rooms = new Map(); // room -> [socket1, socket2]
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   socket.on("find_match", () => {
-    // clean queue
+    // আগের queue থেকে disconnected socket সরাও
     waitingQueue = waitingQueue.filter((s) => s.connected);
 
     if (waitingQueue.length > 0) {
@@ -34,11 +33,12 @@ io.on("connection", (socket) => {
 
       rooms.set(room, [socket, partner]);
 
-      socket.currentRoom = room;
-      partner.currentRoom = room;
-
       socket.emit("matched", { room, initiator: false });
       partner.emit("matched", { room, initiator: true });
+
+      // Room এ কে আছে track করো
+      socket.currentRoom = room;
+      partner.currentRoom = room;
 
       console.log(`Matched: ${socket.id} <-> ${partner.id}`);
     } else {
@@ -56,35 +56,20 @@ io.on("connection", (socket) => {
   });
 
   socket.on("skip", ({ room }) => {
-    const users = rooms.get(room);
-
-    if (users) {
-      users.forEach((user) => {
-        user.leave(room);
-        user.currentRoom = null;
-      });
-    }
-
     socket.to(room).emit("partner_skipped");
+    socket.leave(room);
     rooms.delete(room);
   });
 
   socket.on("disconnect", () => {
+    // Queue থেকে সরাও
     waitingQueue = waitingQueue.filter((s) => s.id !== socket.id);
 
+    // যদি কোনো room এ ছিল, partner কে জানাও
+    // এবং partner কে auto re-search এ পাঠাও
     if (socket.currentRoom) {
       const room = socket.currentRoom;
-
-      socket.to(room).emit("partner_left");
-
-      const users = rooms.get(room);
-      if (users) {
-        users.forEach((user) => {
-          user.leave(room);
-          user.currentRoom = null;
-        });
-      }
-
+      socket.to(room).emit("partner_left"); // partner চলে গেছে
       rooms.delete(room);
     }
 
@@ -92,7 +77,7 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = 3001;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Signaling server running on port ${PORT}`);
 });
