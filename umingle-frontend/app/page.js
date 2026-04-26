@@ -1,7 +1,35 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { io } from "socket.io-client";
 import Peer from "simple-peer";
+
+// FIX: iceServers component এর বাইরে — প্রতি render এ নতুন array তৈরি হবে না
+function buildIceServers() {
+  const servers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun.relay.metered.ca:80" },
+  ];
+
+  if (
+    process.env.NEXT_PUBLIC_TURN_USERNAME &&
+    process.env.NEXT_PUBLIC_TURN_CREDENTIAL
+  ) {
+    servers.push({
+      urls: [
+        "turn:global.relay.metered.ca:80",
+        "turn:global.relay.metered.ca:443",
+        "turns:global.relay.metered.ca:443?transport=tcp",
+      ],
+      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+    });
+  }
+
+  return servers;
+}
+
+const ICE_SERVERS = buildIceServers();
 
 export default function Home() {
   const [status, setStatus] = useState("idle");
@@ -14,26 +42,7 @@ export default function Home() {
   const localStreamRef = useRef(null);
   const roomRef = useRef(null);
   const messagesEndRef = useRef(null);
-  const isMatchingRef = useRef(false); // Prevent multiple match attempts
-
-  const iceServers = [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun.relay.metered.ca:80" },
-  ];
-
-  // Add TURN if credentials exist
-  if (process.env.NEXT_PUBLIC_TURN_USERNAME && process.env.NEXT_PUBLIC_TURN_CREDENTIAL) {
-    iceServers.push({
-      urls: [
-        "turn:global.relay.metered.ca:80",
-        "turn:global.relay.metered.ca:443",
-        "turns:global.relay.metered.ca:443?transport=tcp"
-      ],
-      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
-    });
-  }
+  const isMatchingRef = useRef(false);
 
   const getLocalStream = async () => {
     try {
@@ -57,6 +66,7 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Status বদলালে local video reassign করো (DOM এ video element আসে)
   useEffect(() => {
     if (localStreamRef.current && localVideoRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
@@ -75,9 +85,9 @@ export default function Home() {
   };
 
   const startChat = async () => {
-    if (isMatchingRef.current) return; // Prevent multiple start attempts
+    if (isMatchingRef.current) return;
     isMatchingRef.current = true;
-    
+
     try {
       if (socketRef.current) {
         socketRef.current.removeAllListeners();
@@ -86,8 +96,10 @@ export default function Home() {
       }
 
       const stream = await getLocalStream();
-      
-      const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_SERVER || window.location.origin;
+
+      const signalingUrl =
+        process.env.NEXT_PUBLIC_SIGNALING_SERVER || window.location.origin;
+
       socketRef.current = io(signalingUrl, {
         transports: ["websocket", "polling"],
         reconnection: true,
@@ -95,6 +107,7 @@ export default function Home() {
         reconnectionDelay: 1000,
       });
 
+      // Connect হলে find_match emit করো
       socketRef.current.on("connect", () => {
         console.log("Socket connected");
         socketRef.current.emit("find_match");
@@ -113,17 +126,14 @@ export default function Home() {
         setMessages([]);
         isMatchingRef.current = false;
 
-        // Remove old signal listeners
         socketRef.current.off("signal");
-        
-        // Clean up existing peer
         cleanupPeer();
 
         const peer = new Peer({
           initiator,
           trickle: true,
           stream: stream,
-          config: { iceServers },
+          config: { iceServers: ICE_SERVERS },
         });
 
         peer.on("signal", (data) => {
@@ -138,9 +148,13 @@ export default function Home() {
           }
         });
 
+        // FIX: error হলে room, status, messages সব reset করো
         peer.on("error", (err) => {
           console.error("Peer error:", err);
           cleanupPeer();
+          roomRef.current = null;
+          setStatus("waiting");
+          setMessages([]);
           if (socketRef.current && socketRef.current.connected) {
             socketRef.current.emit("find_match");
           }
@@ -204,7 +218,6 @@ export default function Home() {
         setStatus("idle");
         isMatchingRef.current = false;
       });
-
     } catch (error) {
       console.error("Error starting chat:", error);
       setStatus("idle");
@@ -214,20 +227,26 @@ export default function Home() {
 
   const skipPartner = () => {
     cleanupPeer();
-    
+
     if (socketRef.current && roomRef.current && socketRef.current.connected) {
       socketRef.current.emit("skip", { room: roomRef.current });
     }
-    
+
     roomRef.current = null;
     setStatus("waiting");
     setMessages([]);
+
+    // FIX: skip করার পরে client থেকে find_match emit করো
+    // server-side emit client এ পৌঁছায় না (client listener নেই)
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit("find_match");
+    }
   };
 
   const stopChat = () => {
     cleanupPeer();
     isMatchingRef.current = false;
-    
+
     if (socketRef.current) {
       socketRef.current.removeAllListeners();
       socketRef.current.disconnect();
@@ -243,7 +262,7 @@ export default function Home() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-    
+
     setStatus("idle");
     setMessages([]);
     roomRef.current = null;
@@ -345,7 +364,9 @@ export default function Home() {
             >
               <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2 flex-shrink-0">
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                <h3 className="font-semibold text-gray-200 text-sm sm:text-base">Live Chat</h3>
+                <h3 className="font-semibold text-gray-200 text-sm sm:text-base">
+                  Live Chat
+                </h3>
               </div>
 
               <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2">
@@ -359,7 +380,9 @@ export default function Home() {
                   messages.map((msg, i) => (
                     <div
                       key={i}
-                      className={`flex ${msg.from === "you" ? "justify-end" : "justify-start"}`}
+                      className={`flex ${
+                        msg.from === "you" ? "justify-end" : "justify-start"
+                      }`}
                     >
                       <div
                         className={`max-w-[80%] px-3 py-2 rounded-2xl text-xs sm:text-sm shadow-md break-words ${
@@ -386,7 +409,9 @@ export default function Home() {
 
                 <input
                   className="flex-1 min-w-0 text-xs sm:text-sm bg-white/10 border border-white/20 rounded-full px-3 sm:px-4 py-2 outline-none focus:ring-2 focus:ring-blue-400/50 placeholder:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed"
-                  placeholder={isWaiting ? "Waiting for match..." : "Type a message..."}
+                  placeholder={
+                    isWaiting ? "Waiting for match..." : "Type a message..."
+                  }
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendMessage()}
@@ -398,8 +423,18 @@ export default function Home() {
                   disabled={isWaiting}
                   className="flex-shrink-0 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 active:scale-95 text-white w-10 h-10 rounded-full transition-all duration-200 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
                 >
-                  <svg className="w-4 h-4 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                  <svg
+                    className="w-4 h-4 rotate-90"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                    />
                   </svg>
                 </button>
               </div>
@@ -410,3 +445,4 @@ export default function Home() {
     </main>
   );
           }
+        
