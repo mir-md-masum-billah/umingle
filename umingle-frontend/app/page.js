@@ -12,32 +12,39 @@ export default function Home() {
   const peerRef = useRef(null);
   const localStreamRef = useRef(null);
   const roomRef = useRef(null);
+  const messagesEndRef = useRef(null);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
   const iceServers = [
-    { urls: "stun:stun.relay.metered.ca:80" },
-    {
-      urls: "turn:global.relay.metered.ca:80",
-      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
-    },
+    { urls: "stun:stun.l.google.com:19302" },
   ];
 
+  // ✅ Auto scroll
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // ✅ Get media
   const getLocalStream = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true,
-    });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
 
-    localStreamRef.current = stream;
+      localStreamRef.current = stream;
 
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      return stream;
+    } catch (err) {
+      alert("Camera/Microphone permission denied");
+      throw err;
     }
-
-    return stream;
   };
 
   const cleanupPeer = () => {
@@ -52,7 +59,7 @@ export default function Home() {
   };
 
   const startChat = async () => {
-    if (socketRef.current) return; // prevent multi connect
+    if (socketRef.current) return;
 
     try {
       const stream = await getLocalStream();
@@ -62,6 +69,11 @@ export default function Home() {
       });
 
       socketRef.current = socket;
+
+      socket.on("connect_error", () => {
+        alert("Server connection failed");
+        stopChat();
+      });
 
       socket.on("waiting", () => {
         setStatus("waiting");
@@ -92,13 +104,9 @@ export default function Home() {
           }
         });
 
-        peer.on("error", () => {
-          skipPartner();
-        });
+        peer.on("error", () => skipPartner());
 
-        socket.off("signal"); // clean old listener
-
-        socket.on("signal", ({ data }) => {
+        socket.off("signal").on("signal", ({ data }) => {
           if (peer && !peer.destroyed) {
             peer.signal(data);
           }
@@ -107,17 +115,8 @@ export default function Home() {
         peerRef.current = peer;
       });
 
-      socket.on("partner_left", () => {
-        cleanupPeer();
-        setStatus("waiting");
-        socket.emit("find_match");
-      });
-
-      socket.on("partner_skipped", () => {
-        cleanupPeer();
-        setStatus("waiting");
-        socket.emit("find_match");
-      });
+      socket.on("partner_left", skipPartner);
+      socket.on("partner_skipped", skipPartner);
 
       socket.on("message", ({ text }) => {
         setMessages((prev) => [...prev, { from: "stranger", text }]);
@@ -125,7 +124,7 @@ export default function Home() {
 
       socket.emit("find_match");
     } catch (err) {
-      console.error(err);
+      socketRef.current = null;
       setStatus("idle");
     }
   };
@@ -137,8 +136,8 @@ export default function Home() {
       socketRef.current.emit("skip", { room: roomRef.current });
     }
 
-    setStatus("waiting");
     setMessages([]);
+    setStatus("waiting");
 
     socketRef.current?.emit("find_match");
   };
@@ -180,139 +179,69 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="min-h-screen min-h-dvh bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white flex flex-col">
+    <main className="min-h-screen bg-gray-900 text-white flex flex-col">
+
       {/* Header */}
-      <header className="flex items-center justify-between px-4 sm:px-6 py-3 flex-shrink-0">
-        <h1 className="text-xl sm:text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
-          Umingle
-        </h1>
+      <header className="flex justify-between p-4">
+        <h1 className="text-xl font-bold">Umingle</h1>
         {(status === "waiting" || status === "connected") && (
-          <button
-            onClick={stopChat}
-            className="bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white h-9 w-9 rounded-full font-medium transition-all duration-200 flex items-center justify-center text-sm"
-          >
-            鉁�
-          </button>
+          <button onClick={stopChat}>✖</button>
         )}
       </header>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col items-center justify-center px-3 sm:px-4 pb-4">
+      <div className="flex-1 flex flex-col items-center justify-center p-3">
 
-        {/* Idle state */}
         {status === "idle" && (
-          <button
-            onClick={startChat}
-            className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 active:scale-95 text-white px-8 sm:px-10 py-3 sm:py-4 rounded-full text-base sm:text-lg font-semibold shadow-xl transition-all duration-300 hover:scale-105"
-          >
-            鉁� Start Chat
+          <button onClick={startChat} className="bg-blue-500 px-6 py-3 rounded">
+            ▶ Start Chat
           </button>
         )}
 
-        {/* Active state: video + chat */}
-        {(status === "connected" || status === "waiting") && (
-          <div className="w-full max-w-6xl flex flex-col lg:flex-row gap-3 sm:gap-4 lg:gap-6 lg:items-stretch">
+        {(status === "waiting" || status === "connected") && (
+          <div className="w-full max-w-5xl flex flex-col md:flex-row gap-4">
 
-            {/* Video Section */}
-            <div className="w-full lg:flex-1 lg:min-w-0">
-              <div className="relative bg-black/40 rounded-2xl overflow-hidden border border-white/10 shadow-2xl w-full">
-                {status === "waiting" ? (
-                  <div className="flex flex-col items-center justify-center gap-4 w-full aspect-video min-h-[200px] sm:min-h-[280px]">
-                    <div className="w-12 h-12 sm:w-16 sm:h-16 border-4 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                    <p className="text-gray-300 text-sm sm:text-lg animate-pulse">
-                      Looking for someone...
-                    </p>
-                  </div>
-                ) : (
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    className="w-full aspect-video object-cover min-h-[200px] sm:min-h-[280px]"
-                  />
-                )}
-
-                {/* Stranger label */}
-                <div className="absolute top-3 left-3 bg-black/60 rounded-full px-2.5 py-1 text-xs font-medium flex items-center gap-1.5">
-                  <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                  Stranger
+            {/* Video */}
+            <div className="flex-1 bg-black rounded overflow-hidden relative">
+              {status === "waiting" ? (
+                <div className="h-60 flex items-center justify-center">
+                  Searching...
                 </div>
+              ) : (
+                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full" />
+              )}
 
-                {/* Local PiP video */}
-                <div className="absolute top-3 right-3 w-20 sm:w-28 md:w-32 lg:w-36 aspect-video rounded-xl overflow-hidden shadow-lg border-2 border-blue-400/50 bg-black/50">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover scale-x-[-1]"
-                  />
-                </div>
-              </div>
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                className="absolute bottom-2 right-2 w-24 rounded"
+              />
             </div>
 
-            {/* Chat Section */}
-            <div className="w-full lg:w-80 xl:w-96 flex flex-col bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-xl overflow-hidden"
-              style={{ height: "clamp(260px, 40vw, 420px)" }}
-            >
-              {/* Chat header */}
-              <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2 flex-shrink-0">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                <h3 className="font-semibold text-gray-200 text-sm sm:text-base">Live Chat</h3>
-              </div>
-
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2">
-                {messages.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-gray-400 text-xs sm:text-sm italic">
-                    Say hello to start the conversation
+            {/* Chat */}
+            <div className="w-full md:w-80 bg-gray-800 rounded flex flex-col">
+              <div className="flex-1 overflow-y-auto p-2">
+                {messages.map((msg, i) => (
+                  <div key={i} className={msg.from === "you" ? "text-right" : ""}>
+                    <span className="bg-gray-700 px-2 py-1 rounded inline-block m-1">
+                      {msg.text}
+                    </span>
                   </div>
-                ) : (
-                  messages.map((msg, i) => (
-                    <div
-                      key={i}
-                      className={`flex ${msg.from === "you" ? "justify-end" : "justify-start"}`}
-                    >
-                      <div
-                        className={`max-w-[80%] px-3 py-2 rounded-2xl text-xs sm:text-sm shadow-md break-words ${
-                          msg.from === "you"
-                            ? "bg-gradient-to-r from-blue-500 to-purple-600 text-white"
-                            : "bg-white/10 text-gray-200"
-                        }`}
-                      >
-                        {msg.text}
-                      </div>
-                    </div>
-                  ))
-                )}
+                ))}
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Input row */}
-              <div className="flex items-center gap-2 p-2 sm:p-3 border-t border-white/10 flex-shrink-0">
-                <button
-                  onClick={skipPartner}
-                  className="flex-shrink-0 px-2.5 sm:px-3 h-10 text-xs sm:text-sm bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 active:scale-95 text-white font-semibold rounded-xl transition-all duration-200 whitespace-nowrap"
-                >
-                  Next 鈥�
-                </button>
+              <div className="flex p-2 gap-2">
+                <button onClick={skipPartner}>Next</button>
 
                 <input
-                  className="flex-1 min-w-0 text-xs sm:text-sm bg-white/10 border border-white/20 rounded-full px-3 sm:px-4 py-2 outline-none focus:ring-2 focus:ring-blue-400/50 placeholder:text-gray-400"
-                  placeholder="Type a message..."
+                  className="flex-1 text-black px-2"
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendMessage()}
                 />
 
-                <button
-                  onClick={sendMessage}
-                  className="flex-shrink-0 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 active:scale-95 text-white w-10 h-10 rounded-full transition-all duration-200 flex items-center justify-center"
-                >
-                  <svg className="w-4 h-4 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                  </svg>
-                </button>
+                <button onClick={sendMessage}>Send</button>
               </div>
             </div>
 
@@ -321,4 +250,4 @@ export default function Home() {
       </div>
     </main>
   );
-                      }
+        }
