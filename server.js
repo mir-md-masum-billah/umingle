@@ -17,12 +17,35 @@ const io = new Server(server, {
 let waitingQueue = [];
 const rooms = new Map(); // room -> [socket1, socket2]
 
+// Helper: socket এবং তার partner কে room থেকে properly বের করো
+function cleanupRoom(room, rooms) {
+  const roomSockets = rooms.get(room);
+  if (!roomSockets) return;
+
+  roomSockets.forEach((s) => {
+    s.leave(room);
+    s.currentRoom = null;
+  });
+
+  rooms.delete(room);
+}
+
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   socket.on("find_match", () => {
-    // আগের queue থেকে disconnected socket সরাও
+    // Disconnected socket গুলো queue থেকে সরাও
     waitingQueue = waitingQueue.filter((s) => s.connected);
+
+    // আগের room এ থাকলে আগে সেটা clean করো
+    if (socket.currentRoom) {
+      cleanupRoom(socket.currentRoom, rooms);
+    }
+
+    // ইতিমধ্যে queue তে থাকলে দুইবার add করো না
+    if (waitingQueue.some((s) => s.id === socket.id)) {
+      return;
+    }
 
     if (waitingQueue.length > 0) {
       const partner = waitingQueue.shift();
@@ -33,12 +56,11 @@ io.on("connection", (socket) => {
 
       rooms.set(room, [socket, partner]);
 
-      socket.emit("matched", { room, initiator: false });
-      partner.emit("matched", { room, initiator: true });
-
-      // Room এ কে আছে track করো
       socket.currentRoom = room;
       partner.currentRoom = room;
+
+      socket.emit("matched", { room, initiator: false });
+      partner.emit("matched", { room, initiator: true });
 
       console.log(`Matched: ${socket.id} <-> ${partner.id}`);
     } else {
@@ -56,21 +78,33 @@ io.on("connection", (socket) => {
   });
 
   socket.on("skip", ({ room }) => {
+    // Partner কে জানাও তার আগে
     socket.to(room).emit("partner_skipped");
-    socket.leave(room);
-    rooms.delete(room);
+
+    // উভয় socket কে room থেকে বের করো এবং currentRoom clear করো
+    cleanupRoom(room, rooms);
   });
 
   socket.on("disconnect", () => {
     // Queue থেকে সরাও
     waitingQueue = waitingQueue.filter((s) => s.id !== socket.id);
 
-    // যদি কোনো room এ ছিল, partner কে জানাও
-    // এবং partner কে auto re-search এ পাঠাও
+    // যদি কোনো room এ ছিল, partner কে জানাও এবং room clean করো
     if (socket.currentRoom) {
       const room = socket.currentRoom;
-      socket.to(room).emit("partner_left"); // partner চলে গেছে
-      rooms.delete(room);
+      const roomSockets = rooms.get(room);
+
+      if (roomSockets) {
+        const partner = roomSockets.find((s) => s.id !== socket.id);
+        if (partner) {
+          partner.emit("partner_left");
+          partner.leave(room);
+          partner.currentRoom = null;
+        }
+        rooms.delete(room);
+      }
+
+      socket.currentRoom = null;
     }
 
     console.log("User disconnected:", socket.id);
