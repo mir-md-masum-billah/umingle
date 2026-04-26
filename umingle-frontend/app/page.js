@@ -14,25 +14,26 @@ export default function Home() {
   const localStreamRef = useRef(null);
   const roomRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const isMatchingRef = useRef(false); // Prevent multiple match attempts
 
   const iceServers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
     { urls: "stun:stun.relay.metered.ca:80" },
-    {
-      urls: "turn:global.relay.metered.ca:80",
-      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
-    },
-    {
-      urls: "turn:global.relay.metered.ca:443",
-      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
-    },
-    {
-      urls: "turns:global.relay.metered.ca:443?transport=tcp",
-      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
-    },
   ];
+
+  // Add TURN if credentials exist
+  if (process.env.NEXT_PUBLIC_TURN_USERNAME && process.env.NEXT_PUBLIC_TURN_CREDENTIAL) {
+    iceServers.push({
+      urls: [
+        "turn:global.relay.metered.ca:80",
+        "turn:global.relay.metered.ca:443",
+        "turns:global.relay.metered.ca:443?transport=tcp"
+      ],
+      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+    });
+  }
 
   const getLocalStream = async () => {
     try {
@@ -41,8 +42,9 @@ export default function Home() {
         audio: true,
       });
       localStreamRef.current = stream;
-      // localVideoRef এখনো DOM এ নেই (status === "idle"),
-      // তাই status change useEffect এ assign হবে
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
       return stream;
     } catch (error) {
       console.error("Error accessing media devices:", error);
@@ -51,12 +53,10 @@ export default function Home() {
     }
   };
 
-  // Auto-scroll messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Status বদলালে local stream reassign করো (DOM এ video এসে যায়)
   useEffect(() => {
     if (localStreamRef.current && localVideoRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
@@ -65,6 +65,7 @@ export default function Home() {
 
   const cleanupPeer = () => {
     if (peerRef.current) {
+      peerRef.current.removeAllListeners();
       peerRef.current.destroy();
       peerRef.current = null;
     }
@@ -74,36 +75,49 @@ export default function Home() {
   };
 
   const startChat = async () => {
+    if (isMatchingRef.current) return; // Prevent multiple start attempts
+    isMatchingRef.current = true;
+    
     try {
-      // FIX: আগের socket থাকলে আগে disconnect করো
       if (socketRef.current) {
+        socketRef.current.removeAllListeners();
         socketRef.current.disconnect();
         socketRef.current = null;
       }
 
       const stream = await getLocalStream();
-
-      socketRef.current = io(process.env.NEXT_PUBLIC_SIGNALING_SERVER, {
-        transports: ["websocket"],
+      
+      const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_SERVER || window.location.origin;
+      socketRef.current = io(signalingUrl, {
+        transports: ["websocket", "polling"],
         reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
       });
 
       socketRef.current.on("connect", () => {
         console.log("Socket connected");
+        socketRef.current.emit("find_match");
       });
 
       socketRef.current.on("waiting", () => {
         setStatus("waiting");
         setMessages([]);
+        isMatchingRef.current = false;
       });
 
       socketRef.current.on("matched", ({ room, initiator }) => {
+        console.log("Matched in room:", room);
         roomRef.current = room;
         setStatus("connected");
         setMessages([]);
+        isMatchingRef.current = false;
 
-        // আগের signal listener সরাও, নতুন peer এর জন্য
+        // Remove old signal listeners
         socketRef.current.off("signal");
+        
+        // Clean up existing peer
+        cleanupPeer();
 
         const peer = new Peer({
           initiator,
@@ -113,7 +127,9 @@ export default function Home() {
         });
 
         peer.on("signal", (data) => {
-          socketRef.current?.emit("signal", { room, data });
+          if (socketRef.current && roomRef.current) {
+            socketRef.current.emit("signal", { room: roomRef.current, data });
+          }
         });
 
         peer.on("stream", (remoteStream) => {
@@ -122,23 +138,23 @@ export default function Home() {
           }
         });
 
-        // FIX: peer error এ skipPartner() না ডেকে সরাসরি cleanup + find_match
         peer.on("error", (err) => {
           console.error("Peer error:", err);
           cleanupPeer();
-          roomRef.current = null; // FIX: room clear
-          setMessages([]);
-          setStatus("waiting");
-          socketRef.current?.emit("find_match");
+          if (socketRef.current && socketRef.current.connected) {
+            socketRef.current.emit("find_match");
+          }
         });
 
         peer.on("connect", () => {
-          console.log("Peer connected");
+          console.log("Peer connected successfully");
         });
 
         socketRef.current.on("signal", ({ data }) => {
           if (peerRef.current && !peerRef.current.destroyed) {
             peerRef.current.signal(data);
+          } else if (peer && !peer.destroyed) {
+            peer.signal(data);
           }
         });
 
@@ -146,59 +162,74 @@ export default function Home() {
       });
 
       socketRef.current.on("partner_skipped", () => {
+        console.log("Partner skipped");
         cleanupPeer();
-        roomRef.current = null; // FIX: room clear
+        roomRef.current = null;
         setMessages([]);
         setStatus("waiting");
-        socketRef.current.emit("find_match");
+        setTimeout(() => {
+          if (socketRef.current && socketRef.current.connected && !roomRef.current) {
+            socketRef.current.emit("find_match");
+          }
+        }, 500);
       });
 
       socketRef.current.on("partner_left", () => {
+        console.log("Partner left");
         cleanupPeer();
-        roomRef.current = null; // FIX: room clear
+        roomRef.current = null;
         setMessages([]);
         setStatus("waiting");
-        socketRef.current.emit("find_match");
+        setTimeout(() => {
+          if (socketRef.current && socketRef.current.connected && !roomRef.current) {
+            socketRef.current.emit("find_match");
+          }
+        }, 500);
       });
 
       socketRef.current.on("message", ({ text }) => {
         setMessages((prev) => [...prev, { from: "stranger", text }]);
       });
 
-      socketRef.current.on("error", (error) => {
-        console.error("Socket error:", error);
-        stopChat();
+      socketRef.current.on("connect_error", (error) => {
+        console.error("Socket connect error:", error);
+        setStatus("idle");
+        isMatchingRef.current = false;
       });
 
-      socketRef.current.emit("find_match");
+      socketRef.current.on("disconnect", () => {
+        console.log("Socket disconnected");
+        cleanupPeer();
+        roomRef.current = null;
+        setStatus("idle");
+        isMatchingRef.current = false;
+      });
+
     } catch (error) {
       console.error("Error starting chat:", error);
       setStatus("idle");
+      isMatchingRef.current = false;
     }
   };
 
   const skipPartner = () => {
     cleanupPeer();
-
-    if (socketRef.current && roomRef.current) {
+    
+    if (socketRef.current && roomRef.current && socketRef.current.connected) {
       socketRef.current.emit("skip", { room: roomRef.current });
     }
-
-    // FIX: skip করার পরেই room null করো
+    
     roomRef.current = null;
-
     setStatus("waiting");
     setMessages([]);
-
-    if (socketRef.current) {
-      socketRef.current.emit("find_match");
-    }
   };
 
   const stopChat = () => {
     cleanupPeer();
-
+    isMatchingRef.current = false;
+    
     if (socketRef.current) {
+      socketRef.current.removeAllListeners();
       socketRef.current.disconnect();
       socketRef.current = null;
     }
@@ -212,16 +243,15 @@ export default function Home() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-
+    
     setStatus("idle");
     setMessages([]);
     roomRef.current = null;
   };
 
-  // FIX: connected না হলে message পাঠানো যাবে না
   const sendMessage = () => {
     if (!inputText.trim() || status !== "connected") return;
-    if (socketRef.current && roomRef.current) {
+    if (socketRef.current && roomRef.current && socketRef.current.connected) {
       socketRef.current.emit("message", {
         room: roomRef.current,
         text: inputText,
@@ -231,13 +261,13 @@ export default function Home() {
     }
   };
 
-  // Component unmount এ cleanup
   useEffect(() => {
     return () => {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       if (socketRef.current) {
+        socketRef.current.removeAllListeners();
         socketRef.current.disconnect();
       }
       if (peerRef.current) {
@@ -250,7 +280,6 @@ export default function Home() {
 
   return (
     <main className="min-h-screen min-h-dvh bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white flex flex-col">
-      {/* Header */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 flex-shrink-0">
         <h1 className="text-xl sm:text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
           Umingle
@@ -265,10 +294,7 @@ export default function Home() {
         )}
       </header>
 
-      {/* Main content */}
       <div className="flex-1 flex flex-col items-center justify-center px-3 sm:px-4 pb-4">
-
-        {/* Idle state */}
         {status === "idle" && (
           <button
             onClick={startChat}
@@ -278,11 +304,8 @@ export default function Home() {
           </button>
         )}
 
-        {/* Active state: video + chat */}
         {(status === "connected" || status === "waiting") && (
           <div className="w-full max-w-6xl flex flex-col lg:flex-row gap-3 sm:gap-4 lg:gap-6 lg:items-stretch">
-
-            {/* Video Section */}
             <div className="w-full lg:flex-1 lg:min-w-0">
               <div className="relative bg-black/40 rounded-2xl overflow-hidden border border-white/10 shadow-2xl w-full">
                 {isWaiting ? (
@@ -300,14 +323,10 @@ export default function Home() {
                     className="w-full aspect-video object-cover min-h-[200px] sm:min-h-[280px]"
                   />
                 )}
-
-                {/* Stranger label */}
                 <div className="absolute top-3 left-3 bg-black/60 rounded-full px-2.5 py-1 text-xs font-medium flex items-center gap-1.5">
                   <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                   Stranger
                 </div>
-
-                {/* Local PiP video */}
                 <div className="absolute top-3 right-3 w-20 sm:w-28 md:w-32 lg:w-36 aspect-video rounded-xl overflow-hidden shadow-lg border-2 border-blue-400/50 bg-black/50">
                   <video
                     ref={localVideoRef}
@@ -320,18 +339,15 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Chat Section */}
             <div
               className="w-full lg:w-80 xl:w-96 flex flex-col bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-xl overflow-hidden"
               style={{ height: "clamp(260px, 40vw, 420px)" }}
             >
-              {/* Chat header */}
               <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2 flex-shrink-0">
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                 <h3 className="font-semibold text-gray-200 text-sm sm:text-base">Live Chat</h3>
               </div>
 
-              {/* Messages */}
               <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2">
                 {messages.length === 0 ? (
                   <div className="h-full flex items-center justify-center text-gray-400 text-xs sm:text-sm italic">
@@ -360,7 +376,6 @@ export default function Home() {
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Input row */}
               <div className="flex items-center gap-2 p-2 sm:p-3 border-t border-white/10 flex-shrink-0">
                 <button
                   onClick={skipPartner}
@@ -369,7 +384,6 @@ export default function Home() {
                   Next ›
                 </button>
 
-                {/* FIX: waiting state এ input disabled */}
                 <input
                   className="flex-1 min-w-0 text-xs sm:text-sm bg-white/10 border border-white/20 rounded-full px-3 sm:px-4 py-2 outline-none focus:ring-2 focus:ring-blue-400/50 placeholder:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed"
                   placeholder={isWaiting ? "Waiting for match..." : "Type a message..."}
@@ -379,7 +393,6 @@ export default function Home() {
                   disabled={isWaiting}
                 />
 
-                {/* FIX: waiting state এ send button disabled */}
                 <button
                   onClick={sendMessage}
                   disabled={isWaiting}
@@ -391,10 +404,9 @@ export default function Home() {
                 </button>
               </div>
             </div>
-
           </div>
         )}
       </div>
     </main>
   );
-}
+          }
